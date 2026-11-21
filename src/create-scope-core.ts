@@ -1,0 +1,43 @@
+import { ReplaySubject, takeUntil } from 'rxjs';
+import type { Observable, Observer, Subscription } from 'rxjs';
+
+/** One explicit lifetime and the connections attached to it. */
+export type Scope = Readonly<{
+  /** Emits once on disposal and remembers that event for late observers. */
+  disposed$: Observable<void>;
+
+  /**
+   * Connect at the effect boundary. The lifetime gate is downstream of the
+   * supplied pipeline, including its flattening and sharing operators.
+   * A disposed scope completes the observer without starting the source.
+   */
+  connect: <T>(
+    observer: Partial<Observer<T>>,
+    source$: Observable<T>,
+  ) => Subscription;
+
+  /** End all remaining connections. Repeated calls have no further effect. */
+  dispose: () => void;
+}>;
+
+/** Internal lifetime mechanism shared by the callable and method-style APIs. */
+export const createScopeCore = (): Scope => {
+  const disposed = new ReplaySubject<void>(1);
+  const disposed$ = disposed.asObservable();
+  let isDisposed = false;
+
+  const connect = <T>(
+    observer: Partial<Observer<T>>,
+    source$: Observable<T>,
+  ): Subscription => source$.pipe(takeUntil(disposed$)).subscribe(observer);
+
+  const dispose = (): void => {
+    if (isDisposed) return;
+
+    isDisposed = true;
+    disposed.next();
+    disposed.complete();
+  };
+
+  return { disposed$, connect, dispose };
+};

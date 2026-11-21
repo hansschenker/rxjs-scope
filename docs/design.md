@@ -1,8 +1,10 @@
-# Subscription ownership with RxJS scopes
+# Callable scopes for RxJS connections
 
 > Every connection belongs to an owner. Ending the owner ends its remaining connections.
 
 This design adapts the subscription ownership idea behind Angular's `AsyncPipe` to a small, class-free RxJS API. A view, dialog, animation, or task can own a scope. Stream descriptions determine what may flow; the scope determines how long its consumer may remain connected.
+
+`createScope<T>()` returns a callable scope. Use it as `source$.pipe(scope)` or `scope(source$)`, and retain its `dispose()`, `disposed$`, and generic `connect(...)` methods. These forms all use one lifetime. “Owner” describes the application responsibility for ending that lifetime; it is not an additional public API.
 
 The approach uses public RxJS APIs and is designed around RxJS 7.8.2. It requires a real lifecycle boundary: the application must call `dispose()` when the owner ends.
 
@@ -16,7 +18,7 @@ Consider a counter view with Slow, Fast, and Pause buttons. Three kinds of infor
 - **Counter values:** Numbers emitted by the currently selected counter.
 - **Lifetime:** A notification saying that the view has ended.
 
-The slow and fast descriptions can be created once when mounting the view. They remain on-demand descriptions until connected. Button events come from an externally live source; connecting `fromEvent` installs this view's listener.
+The slow and fast descriptions can be created once when mounting the view. They remain on-demand descriptions until connected. Button events come from an externally live source; connecting `fromEvent` installs this view's listener. `fromEvent` adapts the element's events to an Observable, while the scope controls the lifetime of this observation. The browser's native event producer exists independently.
 
 Clicking Fast selects the fast description. The connection to the previous counter closes, and the fast counter starts. Clicking Fast again selects the same reference, so the existing connection continues. Pause closes the counter connection. Unmounting closes the selection stream, its button listeners, and the active counter connection.
 
@@ -34,23 +36,39 @@ This also defines the limit of “automatic.” Removing an element alone does n
 
 **Replacement** answers which source is relevant now. `distinctUntilChanged()` compares consecutive source references using `===`; `switchMap` closes the previous inner connection before connecting to its replacement.[^distinct][^switch]
 
-**Ownership** answers how long the observation may exist. A scope supplies a disposal notification, and `takeUntil` closes each owned connection when that notification arrives.[^until]
+**Lifetime** answers how long the observation may exist. A scope supplies a disposal notification, and `takeUntil` closes each scoped connection when that notification arrives. The stop notification stays separate from the stream's business values.[^until]
 
 For a fixed source, only ownership is needed. Source switching is useful when a view can select another Observable during its lifetime.
 
 ## 2. Specification: the small public contract
 
-### `createScope()`
+### `createScope<T>()`
 
-The factory returns three members:
+The factory returns a function with lifecycle members:
 
-| Member | Meaning |
+| Use or member | Meaning |
 | --- | --- |
+| `source$.pipe(scope)` | Compose a stream with the scope's lifetime boundary. |
+| `scope(source$)` | Apply the same operator directly; the result remains lazy. |
 | `disposed$: Observable<void>` | A read-only view of the scope's retained disposal signal. |
 | `connect(observer, source$): Subscription` | Connect the supplied observer to the source under this scope's lifetime. |
 | `dispose(): void` | End the scope and close its remaining connections. Repeated calls have no additional effect. |
 
-Creating the scope does not connect any business source. Calling `connect` is the explicit subscription boundary. Its observer-first argument order keeps the consumer behavior separate from the source description.
+The public callable type is:
+
+```ts
+type ScopedOperator<T> = Scope & MonoTypeOperatorFunction<T>;
+
+declare const createScope: <T = unknown>() => ScopedOperator<T>;
+```
+
+A function can carry properties. Each public factory call creates one internal `createScopeCore()`, creates an operator applying `takeUntil(core.disposed$)`, and combines them with `Object.assign`. The core retains the original lifecycle mechanism. Applying or subscribing through the callable scope does not create another core or lifetime.
+
+Creating the scope and composing it with a source do not connect any business source. Calling `subscribe` on the resulting Observable, or calling `scope.connect`, is the explicit subscription boundary. The method's observer-first argument order remains available for existing code.
+
+`T` describes the values accepted and preserved by the callable operator. The lifecycle signal itself contains no business value. `connect` remains independently generic, so a `createScope<number>()` may also attach a string-valued stream through its method. Plain `createScope()` still works for method-style use; its callable type defaults to `unknown` when no type information is supplied. Specify `<T>` for an independently declared callable scope.
+
+Retain the returned scope handle so the runtime can register `scope.dispose` as teardown. Inline creation inside `pipe` loses that useful handle. One scope can be applied to several pipelines; they share a lifetime, while each source retains its existing on-demand, live, or explicitly shared execution behavior.
 
 Each connection can complete, error, or be closed early through its returned `Subscription`. That closes the individual connection without disposing the entire scope. A disposed scope is never reopened; a new mount creates a new scope.
 
@@ -78,8 +96,9 @@ The reset value is a rendering policy. If `T` itself includes meaningful `null` 
 
 | Event | Required behavior |
 | --- | --- |
-| Construct a scope or `latestValues` pipeline | No business source starts. |
+| Construct a scope or `latestValues` pipeline, or apply a scope to a source | No business source starts. |
 | Connect through an active scope | Subscribe under the owner's lifetime. |
+| One scoped connection completes or is closed early | Close that connection; the scope and its siblings remain available. |
 | Select a source | Clear the previous presentation and connect to that source. |
 | Select the same reference again | Keep the current connection; do not restart or clear it. |
 | Select a different reference | Close the old source before connecting to the replacement. |
@@ -98,11 +117,25 @@ In RxJS 7.8.2, `takeUntil` subscribes to its notifier first and checks whether i
 
 Disposal must emit before completing the notifier. Completing a notifier without a value does not trigger `takeUntil`. Likewise, a `BehaviorSubject(false)` is unsuitable as a direct stop notifier: its initial `false` is still a notification and would immediately stop a connection.
 
-### Why the lifetime boundary is last
+### Place the callable scope at the lifetime boundary
 
-The scope applies `takeUntil(disposed$)` after the pipeline supplied to `connect`. This includes any flattening, delays, or sharing chosen upstream by the caller.
+`scope.connect` applies `takeUntil(disposed$)` after the supplied pipeline. With the callable form, the caller chooses that position: put `scope` downstream of flattening, scheduling, resubscription, and sharing whose consumer lifetime it should control.
+
+```ts
+const scope = createScope<number | null>();
+
+latestValues(selectedSource$).pipe(scope).subscribe(renderValue);
+```
 
 Putting the lifetime boundary before `switchMap` only completes its stream of source choices. `switchMap` waits for its active inner to finish before completing, so an ongoing inner timer may remain connected. Applying the lifetime boundary at the output closes both the selection connection and the active inner.[^switch]
+
+The same placement principle applies to `mergeMap` and `concatMap`, which can retain active or queued inner work, and to scheduling operators such as `delay`, which can retain pending deliveries. A final scope boundary cancels the work owned upstream of that boundary.[^merge][^delay]
+
+Placing `repeat` after the scope lets disposal completion trigger another subscription. Because disposal is remembered, that subscription can complete immediately and cause further repeats. Place `repeat` before the scope so disposal closes the entire resubscription process.[^repeat]
+
+For per-consumer lifetime, apply the scope after explicit sharing. Otherwise, a completed replay cache downstream of the scope may still deliver values to a later subscriber. The sharing policy continues to decide whether other consumers or a non-reference-counted connection keep upstream running.[^share]
+
+This is a placement rule for operations that can extend work or delivery. `finalize` may follow the scope to observe connection cleanup.
 
 This also protects synchronous setup. If the consumer disposes its scope while handling a synchronous value, subsequent values are not delivered through that closed connection. Cancellation does not forcibly interrupt arbitrary JavaScript computation: a custom producer must cooperate with its closed subscriber and provide teardown for resources it creates.
 
@@ -130,15 +163,17 @@ To keep accepting selections after a failure, handle the error inside the `switc
 
 ### Sharing is a separate choice
 
-Neither `createScope` nor `latestValues` implicitly shares a source. Two connections to an on-demand source can create two executions. If consumers should share one execution, supply an explicitly shared pipeline:
+Neither `createScope` nor `latestValues` implicitly shares a source. Reusing a callable scope shares only its lifetime. Two subscriptions to an on-demand source can create two executions. If consumers should share one execution, supply an explicitly shared pipeline:
 
 ```ts
+const scope = createScope<number | null>();
+
 const sharedValue$ = latestValues(selectedSource$).pipe(
   shareReplay({ bufferSize: 1, refCount: true }),
 );
 
-scope.connect(firstObserver, sharedValue$);
-scope.connect(secondObserver, sharedValue$);
+sharedValue$.pipe(scope).subscribe(firstObserver);
+sharedValue$.pipe(scope).subscribe(secondObserver);
 ```
 
 Reference counting lets an ongoing upstream connection close when its last consumer leaves. Another owner's remaining connection can keep the shared producer running. The shorthand `shareReplay(1)` defaults to `refCount: false` and can keep an upstream source connected with no consumers.[^share]
@@ -159,22 +194,25 @@ Tests should observe connection counts, teardown order, delivered values, and te
 
 Useful Given–When–Then obligations include:
 
-1. **Laziness.** Given a source that records connections, when a scope and binding are constructed, then the connection count remains zero.
-2. **Stable identity.** Given an active source, when the same reference is selected again, then its connection is reused.
-3. **Replacement order.** Given source A, when B is selected, then A's teardown occurs before B connects.
-4. **Whole-owner cleanup.** Given several owned observations, when the owner is disposed, then their selection and inner connections close.
-5. **Late setup.** Given an already-disposed scope, when a connection is requested, then its source never starts.
-6. **Synchronous disposal.** Given a synchronous source, when handling its first value disposes the scope, then no later value reaches that consumer and registered teardown runs once.
-7. **Independent completion.** Given a completed inner source, when a different source is selected, then the new source can connect while the owner remains active.
-8. **Declared error policy.** Given a source failure, then the minimal binding terminates, or an explicitly recovering composition exposes the failure and accepts later selections.
-9. **Explicit sharing.** Given two consumers of a shared ongoing source, when one leaves, then the other continues; when the last leaves, then upstream teardown occurs.
-10. **Retained disposal.** Given a completed replay cache and a disposed owner, when another connection is requested through that owner, then no cached value is delivered.
+1. **Laziness.** Given a source that records connections, when a scope and binding are constructed or the scope is applied to a source, then the connection count remains zero.
+2. **One lifetime across forms.** Given connections made through `.pipe(scope)`, direct `scope(source$)`, and `scope.connect(...)`, when that scope is disposed, then all remaining connections close.
+3. **Stable identity.** Given an active source, when the same reference is selected again, then its connection is reused.
+4. **Replacement order.** Given source A, when B is selected, then A's teardown occurs before B connects.
+5. **Whole-scope cleanup.** Given several scoped observations, when the scope is disposed, then their selection and inner connections close.
+6. **Late setup.** Given an already-disposed scope, when a connection is requested through any supported form, then its source never starts.
+7. **Synchronous disposal.** Given a synchronous source, when handling its first value disposes the scope, then no later value reaches that consumer and registered teardown runs once.
+8. **Independent completion.** Given one completed connection, then sibling connections remain available. Given a completed selected inner source, when a different source is selected, then the new source can connect.
+9. **Declared error policy.** Given a source failure, then the minimal binding terminates, or an explicitly recovering composition exposes the failure and accepts later selections.
+10. **Explicit sharing.** Given two consumers of a shared ongoing source, when one leaves, then the other continues; when the last leaves, then upstream teardown occurs.
+11. **Retained disposal.** Given a completed replay cache and a disposed scope, when another connection is requested through that scope, then no cached value is delivered.
 
 Use deterministic sources or a virtual scheduler for temporal assertions. Source completion, manual early closure, and owner disposal should be checked as separate events because their notification meanings differ.
 
 ## 5. Placement in a view runtime
 
-The runtime creates a scope for each mounted owner, connects its streams, and registers `dispose` as teardown. Source replacement stays in the dataflow. Rendering stays at the connection boundary. Application-wide state can have an application lifetime while each view owns only its observation of that state.
+The library supplies the reusable callable scope. The application runtime creates a scope for each mounted view, connects its streams, and registers `dispose` as teardown. Source replacement stays in the dataflow. Rendering stays at the connection boundary. Application-wide state can have an application lifetime while each view owns only its observation of that state.
+
+The [counter's mounting function](../examples/counter/mount-counter.ts) creates `createScope<number | null>()`, subscribes to `latestValues(selectedSource$).pipe(scope)`, and returns `scope.dispose`. The [page controller](../examples/counter/main.ts) invokes that cleanup before removing the view and creates a fresh scope on remount. The page's own connections also demonstrate compatible `createScope()` plus method-style `connect` use.
 
 The resulting teaching rule is:
 
@@ -189,6 +227,9 @@ The resulting teaching rule is:
 [^angular-source]: [Angular: AsyncPipe implementation](https://github.com/angular/angular/blob/main/packages/common/src/pipes/async_pipe.ts). The `main` implementation evolves; the discussion uses the source inspected on 21 November 2026.
 [^distinct]: [RxJS 7.8.2: distinctUntilChanged implementation](https://github.com/ReactiveX/rxjs/blob/7.8.2/src/internal/operators/distinctUntilChanged.ts).
 [^switch]: [RxJS 7.8.2: switchMap implementation](https://github.com/ReactiveX/rxjs/blob/7.8.2/src/internal/operators/switchMap.ts).
+[^merge]: [RxJS 7.8.2: shared merging and queueing implementation](https://github.com/ReactiveX/rxjs/blob/7.8.2/src/internal/operators/mergeInternals.ts).
+[^delay]: [RxJS 7.8.2: delay implementation](https://github.com/ReactiveX/rxjs/blob/7.8.2/src/internal/operators/delay.ts).
+[^repeat]: [RxJS 7.8.2: repeat implementation](https://github.com/ReactiveX/rxjs/blob/7.8.2/src/internal/operators/repeat.ts).
 [^until]: [RxJS 7.8.2: takeUntil implementation](https://github.com/ReactiveX/rxjs/blob/7.8.2/src/internal/operators/takeUntil.ts).
 [^replay]: [RxJS 7.8.2: ReplaySubject implementation](https://github.com/ReactiveX/rxjs/blob/7.8.2/src/internal/ReplaySubject.ts).
 [^glossary]: [RxJS: Glossary and semantics](https://rxjs.dev/guide/glossary-and-semantics).

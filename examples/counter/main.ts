@@ -10,12 +10,13 @@ const requiredElement = <T extends Element>(selector: string): T => {
 };
 
 const host = requiredElement<HTMLElement>('#counter-view');
-const status = requiredElement<HTMLElement>('#owner-status');
+const status = requiredElement<HTMLElement>('#scope-status');
 const mountButton = requiredElement<HTMLButtonElement>('#mount');
 const unmountButton = requiredElement<HTMLButtonElement>('#unmount');
 const template = requiredElement<HTMLTemplateElement>('#counter-template');
 
-// The page owns the controls; every mounted counter owns a separate scope.
+// The page controls use the compatible connect form and a separate lifetime.
+// Every mounted counter demonstrates createScope<T>() with .pipe(scope).
 const pageScope = createScope();
 let unmountCurrent: (() => void) | undefined;
 

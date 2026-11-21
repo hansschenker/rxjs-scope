@@ -1,8 +1,8 @@
 {
   "name": "rxjs-scope",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Explicit ownership and automatic connection teardown for framework-free RxJS views and tasks.",
+  "description": "Explicit scopes and automatic connection teardown for framework-free RxJS views and tasks.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

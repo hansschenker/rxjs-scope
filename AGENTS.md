@@ -2,8 +2,9 @@
 
 ## Purpose
 
-Preserve the small, framework-free ownership model: a connection belongs to an
-owner, and ending that owner ends its remaining connections.
+Preserve the small, framework-free Scope model: connections share an explicitly
+managed lifetime. Ownership is a teaching aid for who is responsible for ending
+that lifetime, not a separate public API abstraction.
 
 ## Style
 
@@ -18,8 +19,18 @@ owner, and ending that owner ends its remaining connections.
 
 ## Semantics
 
-- `createScope()` exposes `disposed$`, `connect(observer, source$)`, and `dispose()`.
-- The final connection boundary applies `takeUntil` after the supplied pipeline.
+- `createScope<T>()` returns a callable scope: `Scope & MonoTypeOperatorFunction<T>`.
+  It works in `source$.pipe(scope)` and retains `disposed$`, generic
+  `connect(observer, source$)`, and `dispose()`. Plain `createScope()` retains
+  method-style use; specify `<T>` for the callable form.
+- Keep the existing lifetime mechanism in an internal `createScopeCore()` helper.
+  Each public factory call creates one core; applying or subscribing through the
+  returned operator must not create another scope.
+- `connect` applies `takeUntil` at the final boundary. In the pipeable form,
+  place the scope after flattening, scheduling, resubscription, and any sharing
+  whose consumer lifetime it is meant to control.
+- A scope is one-shot. Completion of one connection does not dispose siblings.
+- Preserve the distinction between shared lifetime and shared source execution.
 - Disposal emits once and is remembered. Late connections must not start sources.
 - The owner/runtime must call disposal; DOM removal is not detected automatically.
 - `latestValues` compares source references and explicitly clears to `null` on a

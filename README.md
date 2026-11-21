@@ -1,6 +1,6 @@
 # RxJS Scope
 
-**Explicit ownership and automatic connection teardown with plain RxJS.**
+**A callable RxJS operator with an explicit lifetime and automatic connection teardown.**
 
 > A connection may remain active only while its owner remains active.
 
@@ -11,7 +11,12 @@ documentation.** See [Contributors](CONTRIBUTORS.md).
 ## The idea
 
 A view, route, animation, or task has a lifetime. Its connections belong to that
-lifetime. When its owner ends, those connections end together.
+lifetime. When its owner ends, those connections end together. Here, “owner”
+describes who calls disposal; the public abstraction is the **scope**.
+
+`createScope<T>()` returns a function that works in `source$.pipe(scope)` and also
+exposes `dispose()`, `disposed$`, and `connect(...)`. All uses of that one returned
+scope share one lifetime.
 
 Angular's async pipe inspired this project: it owns a connection, replaces it
 when the selected source reference changes, and closes it when its view is
@@ -26,7 +31,7 @@ itself does not dispose a scope.
 | --- | --- |
 | Describe which values should flow | An Observable pipeline |
 | Follow a newly selected source | `latestValues`: reference comparison and `switchMap` |
-| Bound the lifetime of an observation | `createScope`: a final `takeUntil` boundary |
+| Bound the lifetime of an observation | A callable scope placed at the final `takeUntil` boundary |
 | Interpret values for the application | User-supplied functions and render sinks |
 | Share an execution between consumers | An explicitly configured sharing operator |
 
@@ -48,38 +53,69 @@ Open the local URL printed by Vite for the counter example. `npm run check` runs
 strict TypeScript checking, lifecycle tests, the library build, and the example
 build. The package is private; these instructions use the repository directly.
 
-## 1. Give a connection an owner
+## 1. Create a callable scope
 
-`createScope()` creates local lifecycle bookkeeping. It does not subscribe to
-your source. `connect(observer, source$)` starts the observation and attaches it
-to that lifetime.
+The counter source describes numbers arriving every second. The scope describes
+how long this observation may continue. Creating the scope and composing the
+pipeline are lazy; `subscribe` starts the connection.
 
 ```ts
 import { interval } from 'rxjs';
 import { createScope } from './src/index.js';
 
-const scope = createScope();
+const scope = createScope<number>();
 const count$ = interval(1000);
 
-scope.connect(
-  {
-    next: value => console.log(value),
-    error: error => console.error(error),
-  },
-  count$,
-);
+const connection = count$.pipe(scope).subscribe({
+  next: value => console.log(value),
+  error: error => console.error(error),
+});
 
 // Register this function with the owner's actual unmount/cancel mechanism.
 const unmount = scope.dispose;
 ```
 
-The owner invokes `unmount()` when it ends. A scope may own many connections;
-disposing it ends all the remaining ones. A returned `Subscription` also allows
-one connection to be closed early.
+The mounting runtime invokes `unmount()` when the view ends. A scope may contain
+many connections; disposing it ends all the remaining ones. The returned
+`connection` also allows this observation to be closed early. Completion or early
+closure of one connection does not dispose the scope or its siblings.
+
+### One function, one lifetime
+
+A JavaScript function can have properties. The public factory creates one
+internal `createScopeCore()` and attaches that core's methods to the operator
+function with `Object.assign`. Applying the operator does not create another
+scope or subscribe to a source.
+
+These forms use the same lifetime:
+
+```ts
+const scope = createScope<number>();
+
+const first$ = count$.pipe(scope); // Lazy composition through pipe.
+const second$ = scope(count$);    // Equivalent direct application.
+
+// Existing method-style use also remains available and starts a connection.
+const connection = scope.connect(observer, count$);
+```
+
+Retain the `scope` value so the mounting runtime can call `scope.dispose()`.
+Creating a scope inline inside `pipe` would discard that useful disposal handle.
+
+Sharing a lifetime does not share source execution. Subscribing separately to
+`first$` and `second$` starts separate executions of an on-demand counter. An
+externally live source keeps its existing producer semantics.
 
 ### Scope contract
 
 ```ts
+import type {
+  MonoTypeOperatorFunction,
+  Observable,
+  Observer,
+  Subscription,
+} from 'rxjs';
+
 type Scope = Readonly<{
   disposed$: Observable<void>;
   connect: <T>(
@@ -88,16 +124,48 @@ type Scope = Readonly<{
   ) => Subscription;
   dispose: () => void;
 }>;
+
+type ScopedOperator<T> = Scope & MonoTypeOperatorFunction<T>;
+
+// Public factory signature:
+declare const createScope: <T = unknown>() => ScopedOperator<T>;
 ```
 
+- `T` fixes the value type accepted and preserved by the callable operator.
+- `connect` remains independently generic and infers its value type from each
+  supplied source, including sources with other payload types.
+- Plain `createScope()` still supports method-style use. Specify `<T>` when
+  creating a callable scope without other type context; its default is `unknown`.
 - **While** the scope is active, its connections may receive values.
 - **When** the scope is disposed, its remaining connections close.
 - **When** disposal is repeated, nothing further happens.
 - **When** a connection is requested after disposal, the source does not start.
 
-Disposal is remembered with `ReplaySubject<void>(1)`. The final connection
-boundary applies `takeUntil(disposed$)` after the supplied pipeline, so it also
-closes active inner subscriptions created by flattening operators.
+Disposal is remembered with `ReplaySubject<void>(1)`. Every connection through
+this scope observes that same retained stop signal. A disposed scope is one-shot;
+create a fresh scope for the next mount.
+
+### Place the scope at the observation boundary
+
+In `source$.pipe(..., scope)`, put the scope after operations that can keep work
+alive or deliver values later. `scope.connect(observer, source$)` automatically
+places its lifetime boundary after the supplied pipeline.
+
+| Operation before the scope | What disposal can close |
+| --- | --- |
+| `switchMap`, `mergeMap`, `concatMap` | The source-selection connection, active inners, and pending work owned by that pipeline |
+| `delay`, `observeOn` | Scheduled delivery to this consumer |
+| `repeat` | Resubscription work belonging to this observation |
+| Explicit sharing | This consumer's connection to the shared stream |
+
+Placing those operations after the scope changes the contract: an active inner
+or scheduled value may survive, `repeat` may react to disposal by resubscribing,
+and replay placed after the scope may deliver cached values to later consumers.
+`finalize` can follow the scope when it should observe the connection ending.
+
+For shared sources, the sharing policy still decides when the upstream producer
+ends. A downstream scope cannot make `shareReplay({ refCount: false })` release
+its upstream connection. See [Behavior to keep explicit](#behavior-to-keep-explicit).
 
 ## 2. Follow the selected source
 
@@ -112,12 +180,12 @@ import { createScope, latestValues } from './src/index.js';
 const slow$ = interval(1000);
 const fast$ = interval(250);
 const selectedSource$ = new BehaviorSubject<Observable<number> | null>(slow$);
-const scope = createScope();
+const scope = createScope<number | null>();
 
-scope.connect(
-  { next: value => console.log(value) },
-  latestValues(selectedSource$),
-);
+latestValues(selectedSource$).pipe(scope).subscribe({
+  next: value => console.log(value),
+  error: error => console.error(error),
+});
 
 // These illustrate source-selection actions over the owner's lifetime.
 selectedSource$.next(fast$); // Close slow; clear the view; connect fast.
@@ -147,11 +215,13 @@ can return the value immediately, so this rendering detail is deliberately
 different. Model loading/error/value states separately when `null` is meaningful
 application data.
 
-## 3. Put ownership in mounting
+## 3. Connect the scope to mounting
 
-The [counter example](examples/counter/mount-counter.ts) returns its scope's
-disposal function to its mounting system. Its **Slow**, **Fast**, and **Pause**
-buttons select stable source references; the timers supply the timing.
+The [counter example](examples/counter/mount-counter.ts) creates
+`createScope<number | null>()`, connects
+`latestValues(selectedSource$).pipe(scope)` at its rendering sink, and returns
+`scope.dispose` to its mounting system. Its **Slow**, **Fast**, and **Pause** buttons
+select stable source references; the timers supply the timing.
 
 The [page controller](examples/counter/main.ts) calls that function before
 removing the view. Every remount receives a fresh scope.
@@ -186,9 +256,14 @@ producer. It cannot stop an already-running Promise, other owners' connections,
 or custom work that has no teardown. For cancellable fetch work, consider
 RxJS's `fromFetch` and its request/body cancellation contract.
 
-**Separate subscriptions.** Only connections registered with the scope, or
-belonging to their composed subscription tree, inherit its lifetime. An unrelated
-manual subscription needs its own owner.
+**Separate subscriptions.** Connections made through `.pipe(scope)`, direct
+`scope(source$)` application, or `scope.connect(...)` use the same lifetime.
+Subscriptions belonging to those composed upstream trees inherit that boundary.
+An unrelated manual subscription still needs its own lifetime management.
+
+**Library and application.** The library supplies the reusable scope mechanism.
+The application's mounting runtime retains the handle and invokes disposal at
+the real lifecycle boundary. The scope does not detect DOM removal by itself.
 
 ## Intuition → Specification → Verification
 
