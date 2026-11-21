@@ -1,0 +1,55 @@
+{
+  "name": "rxjs-scope",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Explicit ownership and automatic connection teardown for framework-free RxJS views and tasks.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hansschenker/rxjs-scope.git"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "vite examples/counter",
+    "build:example": "vite build examples/counter --outDir ../../dist-demo --emptyOutDir",
+    "check": "npm run typecheck && npm test && npm run build && npm run build:example"
+  },
+  "peerDependencies": {
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "fast-check": "^4.3.0",
+    "rxjs": "7.8.2",
+    "typescript": "~5.7.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "contributors": [
+    {
+      "name": "Hans Schenker",
+      "url": "https://github.com/hansschenker"
+    },
+    {
+      "name": "ChatGPT (GPT-6 Astra, OpenAI)",
+      "url": "https://openai.com/chatgpt/"
+    }
+  ]
+}

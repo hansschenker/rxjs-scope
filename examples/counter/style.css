@@ -1,0 +1,43 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #18312c;
+  background: #f3f5ef;
+  font-synthesis: none;
+  line-height: 1.6;
+  --accent: #1d6956;
+  --muted: #586e63;
+  --border: #d6dfd5;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 880px; margin: 0 auto; padding: 58px 26px 28px; }
+.eyebrow { font-size: .75rem; text-transform: uppercase; letter-spacing: .12em; color: var(--accent); font-weight: 700; }
+h1 { font-size: clamp(2.5rem, 6vw, 4.5rem); line-height: 1.08; letter-spacing: -.05em; margin: 18px 0; }
+.intro { font-size: 1.15rem; color: var(--muted); max-width: 520px; }
+h2 { font-size: 1.1rem; margin: 0; }
+.owner { margin-top: 38px; padding: 24px 0; display: flex; gap: 20px; justify-content: space-between; align-items: center; border-top: 1px solid var(--border); }
+#owner-status { margin: 3px 0 0; font-size: .85rem; color: var(--muted); }
+.actions { display: flex; gap: 9px; flex-wrap: wrap; }
+button { font: inherit; font-size: .9rem; font-weight: 600; border: 1px solid var(--accent); border-radius: 7px; padding: 9px 14px; color: white; background: var(--accent); cursor: pointer; }
+button.secondary { background: transparent; color: var(--accent); }
+button:hover:enabled { filter: brightness(.92); }
+button:disabled { opacity: .4; cursor: default; }
+button:focus-visible, a:focus-visible { outline: 3px solid #d09d37; outline-offset: 4px; }
+.view { min-height: 285px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: 12px; background: #fffefa; padding: 24px; }
+.view:empty::after { content: 'The view has ended. Mount a new one to reconnect.'; color: var(--muted); text-align: center; }
+.counter { display: flex; flex-direction: column; align-items: center; }
+output { font-size: 4.5rem; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.35; }
+.hint { color: var(--muted); font-size: .8rem; margin: 14px 0 0; text-align: center; }
+.explanation { margin: 32px 0; }
+ol { padding-left: 23px; color: var(--muted); }
+li { margin: 9px 0; }
+li strong { color: #18312c; }
+footer { border-top: 1px solid var(--border); padding-top: 20px; font-size: .8rem; display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; color: var(--muted); }
+footer p { margin: 0; }
+a { color: var(--accent); text-underline-offset: 3px; }
+@media (max-width: 600px) {
+  main { padding: 32px 18px 24px; }
+  .owner { align-items: flex-start; flex-direction: column; }
+  .view { padding: 24px 12px; }
+}
